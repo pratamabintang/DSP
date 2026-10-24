@@ -19,12 +19,17 @@ from models.grid_proto_fewshot import FewShotSeg
 from dataloaders.dev_customized_med import med_fewshot_val
 from dataloaders.ManualAnnoDatasetv2 import ManualAnnoDataset
 from dataloaders.GenericSuperDatasetv2 import SuperpixelDataset
+from dataloaders.LandslideDataset import LandslideDataset
 from dataloaders.dataset_utils import DATASET_INFO, get_normalize_op
 from dataloaders.niftiio import convert_to_sitk
 
 from util.metric import Metric
 
-from config_ssl_upload import ex
+# DSPNET_CONFIG=landslide selects the landslide experiment configuration
+if os.environ.get('DSPNET_CONFIG', '') == 'landslide':
+    from config_landslide import ex
+else:
+    from config_ssl_upload import ex
 
 import tqdm
 import SimpleITK as sitk
@@ -32,6 +37,60 @@ from torchvision.utils import make_grid
 
 # config pre-trained model caching path
 os.environ['TORCH_HOME'] = "./pretrained_model"
+
+def landslide_validation(model, _config, _log, _run):
+    """
+    1-way K-shot binary landslide evaluation on the 'val' or 'test' split.
+    Every query patch is paired with a deterministic support patch from the same split.
+    Reports pixel-accumulated Dice / IoU / precision / recall and the mean per-episode Dice
+    over episodes whose query contains landslide.
+    """
+    split = _config['eval_split']
+    dataset = LandslideDataset(
+        base_dir = _config['path']['Landslide']['data_dir'],
+        split = split,
+        input_size = _config['input_size'][0],
+        n_shots = _config['task']['n_shots'],
+        min_fg_pixels = _config['min_fg_data'],
+        length = _config['n_eval_episodes'],
+        seed = _config['seed'],
+    )
+    loader = DataLoader(dataset, batch_size = 1, shuffle = False, num_workers = 1, pin_memory = False, drop_last = False)
+
+    tp = fp = fn = 0
+    ep_dice = []
+    with torch.no_grad():
+        for sample_batched in tqdm.tqdm(loader):
+            support_images = [[shot.cuda() for shot in way] for way in sample_batched['support_images']]
+            support_fg_mask = [[shot['fg_mask'].float().cuda() for shot in way] for way in sample_batched['support_mask']]
+            support_bg_mask = [[shot['bg_mask'].float().cuda() for shot in way] for way in sample_batched['support_mask']]
+            query_images = [q.cuda() for q in sample_batched['query_images']]
+            query_labels = torch.cat([q.long().cuda() for q in sample_batched['query_labels']], dim=0)
+
+            query_pred, _, _, _ = model(support_images, support_fg_mask, support_bg_mask, query_images,
+                                        isval = True, val_wsize = _config['val_wsize'])
+            pred = query_pred.argmax(dim=1) == 1
+            gt = query_labels == 1
+
+            e_tp = int((pred & gt).sum()); e_fp = int((pred & ~gt).sum()); e_fn = int((~pred & gt).sum())
+            tp += e_tp; fp += e_fp; fn += e_fn
+            if e_tp + e_fn > 0:
+                ep_dice.append(2 * e_tp / (2 * e_tp + e_fp + e_fn))
+
+    eps = 1e-8
+    results = {
+        'dice': 2 * tp / (2 * tp + fp + fn + eps),
+        'iou': tp / (tp + fp + fn + eps),
+        'precision': tp / (tp + fp + eps),
+        'recall': tp / (tp + fn + eps),
+        'mean_episode_dice': float(np.mean(ep_dice)) if ep_dice else 0.0,
+    }
+    for k, v in results.items():
+        _run.log_scalar(f'landslide_{split}_{k}', v)
+        _log.info(f'landslide {split} {k}: {v:.4f}')
+    _log.info(f'End of validation ({len(dataset)} episodes)')
+    return 1
+
 
 @ex.automain
 def main(_run, _config, _log):
@@ -52,6 +111,9 @@ def main(_run, _config, _log):
     model = FewShotSeg(pretrained_path = _config['reload_model_path'], cfg=_config['model'])
     model = model.cuda()
     model.eval()
+
+    if _config['dataset'] == 'Landslide':
+        return landslide_validation(model, _config, _log, _run)
 
     _log.info('###### Load data ######')
     ### Training set

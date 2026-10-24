@@ -14,13 +14,18 @@ import numpy as np
 
 from models.grid_proto_fewshot import FewShotSeg
 from dataloaders.GenericSuperDatasetv2 import SuperpixelDataset
+from dataloaders.LandslideDataset import LandslideDataset
 from dataloaders.dataset_utils import DATASET_INFO
 import dataloaders.augutils as myaug
 
 from util.utils import set_seed, t2n, to01, compose_wt_simple
 from util.metric import Metric
 
-from config_ssl_upload import ex
+# DSPNET_CONFIG=landslide selects the landslide experiment configuration
+if os.environ.get('DSPNET_CONFIG', '') == 'landslide':
+    from config_landslide import ex
+else:
+    from config_ssl_upload import ex
 import tqdm
 
 # config pre-trained model caching path
@@ -60,6 +65,8 @@ def main(_run, _config, _log):
         baseset_name = 'C0'
     elif data_name == 'CHAOST2_Superpix':
         baseset_name = 'CHAOST2'
+    elif data_name == 'Landslide':
+        baseset_name = 'Landslide'
     else:
         raise ValueError(f'Dataset: {data_name} not found')
 
@@ -72,19 +79,30 @@ def main(_run, _config, _log):
     _log.info(f'###### Unseen labels evaluated in testing: {[lb for lb in test_labels]} ######')
 
 
-    tr_parent = SuperpixelDataset( # base dataset
-        which_dataset = baseset_name, 
-        base_dir = _config['path'][data_name]['data_dir'], 
-        idx_split = _config['eval_fold'], 
-        mode = 'train',
-        min_fg = str(_config["min_fg_data"]), # dummy entry for superpixel dataset
-        transforms = tr_transforms, 
-        nsup = _config['task']['n_shots'], 
-        scan_per_load = _config['scan_per_load'], 
-        exclude_list = _config["exclude_cls_list"], 
-        superpix_scale = _config["superpix_scale"], 
-        fix_length = _config["max_iters_per_load"] if (data_name == 'C0_Superpix') or (data_name == 'CHAOST2_Superpix') else None
-    )
+    if data_name == 'Landslide':
+        tr_parent = LandslideDataset(
+            base_dir = _config['path'][data_name]['data_dir'],
+            split = 'train',
+            input_size = _config['input_size'][0],
+            n_shots = _config['task']['n_shots'],
+            min_fg_pixels = _config['min_fg_data'],
+            length = _config['max_iters_per_load'],
+            seed = _config['seed'],
+        )
+    else:
+        tr_parent = SuperpixelDataset( # base dataset
+            which_dataset = baseset_name, 
+            base_dir = _config['path'][data_name]['data_dir'], 
+            idx_split = _config['eval_fold'], 
+            mode = 'train',
+            min_fg = str(_config["min_fg_data"]), # dummy entry for superpixel dataset
+            transforms = tr_transforms, 
+            nsup = _config['task']['n_shots'], 
+            scan_per_load = _config['scan_per_load'], 
+            exclude_list = _config["exclude_cls_list"], 
+            superpix_scale = _config["superpix_scale"], 
+            fix_length = _config["max_iters_per_load"] if (data_name == 'C0_Superpix') or (data_name == 'CHAOST2_Superpix') else None
+        )
     
 
     ### dataloaders

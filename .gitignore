@@ -1,0 +1,6 @@
+datasets/*
+pretrained/*
+.agents/*
+__pycache__/*
+skills-lock.json
+*.sh

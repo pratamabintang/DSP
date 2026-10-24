@@ -35,7 +35,17 @@ DATASET_INFO = {
                 0: set([1,6]  ), # upper_abdomen: spleen + liver as training, kidneis are testing
                 1: set( [2,3] ), # lower_abdomen
                     }
-            }
+            },
+
+    "Landslide": {
+            'PSEU_LABEL_NAME': [],  # unused: episodes are built from real masks, not superpixels
+            'REAL_LABEL_NAME': ["BG", "LANDSLIDE"],
+            'MODALITY': 'RGB',
+            'LABEL_GROUP': {
+                'pa_all': set([1]),
+                0: set([1]), # single foreground class, no held-out class
+                },
+            },
 
 }
 
