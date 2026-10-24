@@ -1,5 +1,5 @@
-from scipy.ndimage.morphology import distance_transform_edt
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import gaussian_filter
 
 import numpy as np
 import cv2

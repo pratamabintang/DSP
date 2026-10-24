@@ -3,12 +3,12 @@ Image transforms functions for data augmentation
 Credit to Dr. Jo Schlemper
 """
 
-from collections import Sequence
+from collections.abc import Sequence  # py3.10+ removed collections.Sequence
 import cv2
 import numpy as np
 import scipy
-from scipy.ndimage.filters import gaussian_filter
-from scipy.ndimage.interpolation import map_coordinates
+from scipy.ndimage import gaussian_filter
+from scipy.ndimage import map_coordinates
 from numpy.lib.stride_tricks import as_strided
 
 ###### UTILITIES ######
