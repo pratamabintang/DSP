@@ -49,6 +49,8 @@ def landslide_validation(model, _config, _log, _run):
     dataset = LandslideDataset(
         base_dir = _config['path']['Landslide']['data_dir'],
         split = split,
+        split_dir = _config['path']['Landslide'].get(f'{split}_dir'),
+        blacklist_path = _config['path']['Landslide'].get('blacklist', 'default'),
         input_size = _config['input_size'][0],
         n_shots = _config['task']['n_shots'],
         min_fg_pixels = _config['min_fg_data'],

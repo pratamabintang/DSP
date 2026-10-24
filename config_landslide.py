@@ -99,7 +99,13 @@ def cfg():
 
     path = {
         'log_dir': './runs',
-        'Landslide': {'data_dir': "./datasets/landslide"},
+        'Landslide': {
+            'data_dir': "./datasets/landslide",  # root with train/ val/ test/ (used when a split dir is None)
+            'train_dir': None,  # explicit dir of the train split (image/ + label/), overrides data_dir/train
+            'val_dir': None,
+            'test_dir': None,
+            'blacklist': 'default',  # 'default' = <data_dir>/black_list.txt, 'none' = disabled, or a file path
+        },
     }
 
 

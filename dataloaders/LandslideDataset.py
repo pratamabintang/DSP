@@ -86,12 +86,18 @@ def read_binary_mask(path: str) -> np.ndarray:
 class LandslideDataset(Dataset):
     """
     Args:
-        base_dir:        dataset root containing train/ val/ test/
+        base_dir:        dataset root containing train/ val/ test/ (optional if `split_dir` is given)
+        split_dir:       explicit directory of this split (containing image/ and label/); overrides
+                         <base_dir>/<split>, so the splits may live in unrelated locations
         split:           'train' | 'val' | 'test'
         input_size:      patches are resized to (input_size, input_size). Must stay coupled to
                          the model's feature_hw (backbone stride is 8: 256 -> 32x32).
         n_shots:         support images per episode (the model currently supports 1)
-        blacklist_path:  file with corrupted sample stems; default <base_dir>/black_list.txt
+        blacklist_path:  file with corrupted sample stems. 'default' (or empty/None-like config
+                         value) -> <base_dir>/black_list.txt if it exists; 'none' -> disabled;
+                         any other value is used as the path and must exist.
+                         The image/label folder names are matched case-insensitively
+                         ('image', 'IMAGE', 'Label', ...), file extensions too ('.png', '.PNG').
         min_fg_pixels:   minimum landslide pixels (native resolution) for a patch to be usable
                          as support (and as query when `query_require_fg`)
         query_require_fg: only sample queries that contain landslide. Default: True in train,
@@ -101,10 +107,11 @@ class LandslideDataset(Dataset):
         verify:          read every mask once at start-up (validity, size match, fg count)
     """
 
-    def __init__(self, base_dir: str, split: str = 'train', input_size: int = 256,
+    def __init__(self, base_dir: Optional[str] = None, split: str = 'train', input_size: int = 256,
                  n_shots: int = 1, blacklist_path: Optional[str] = 'default',
                  min_fg_pixels: int = 64, query_require_fg: Optional[bool] = None,
-                 length: Optional[int] = None, seed: int = 1234, verify: bool = True):
+                 length: Optional[int] = None, seed: int = 1234, verify: bool = True,
+                 split_dir: Optional[str] = None):
         super().__init__()
         assert split in ('train', 'val', 'test'), f'unknown split {split}'
         self.split = split
@@ -115,12 +122,21 @@ class LandslideDataset(Dataset):
         self.seed = int(seed)
         self.query_require_fg = self.is_train if query_require_fg is None else bool(query_require_fg)
 
-        split_dir = os.path.join(base_dir, split)
+        if split_dir in (None, '', 'None'):
+            if not base_dir:
+                raise ValueError('either base_dir or split_dir must be given')
+            split_dir = os.path.join(base_dir, split)
         if not os.path.isdir(split_dir):
             raise FileNotFoundError(f'split directory not found: {split_dir}')
-        if blacklist_path == 'default':
-            blacklist_path = os.path.join(base_dir, 'black_list.txt')
+        if blacklist_path in (None, '', 'default'):
+            blacklist_path = os.path.join(base_dir, 'black_list.txt') if base_dir else None
+        elif str(blacklist_path).lower() == 'none':
+            blacklist_path = None
+        elif not os.path.isfile(blacklist_path):
+            raise FileNotFoundError(f'blacklist file not found: {blacklist_path}')
         self.blacklist = load_blacklist(blacklist_path)
+        print(f'[LandslideDataset:{split}] split_dir={split_dir} blacklist={blacklist_path} '
+              f'({len(self.blacklist)} entries)')
 
         images = _list_pngs(_find_subdir(split_dir, 'image'))
         labels = _list_pngs(_find_subdir(split_dir, 'label'))

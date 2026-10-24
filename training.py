@@ -83,6 +83,8 @@ def main(_run, _config, _log):
         tr_parent = LandslideDataset(
             base_dir = _config['path'][data_name]['data_dir'],
             split = 'train',
+            split_dir = _config['path'][data_name].get('train_dir'),
+            blacklist_path = _config['path'][data_name].get('blacklist', 'default'),
             input_size = _config['input_size'][0],
             n_shots = _config['task']['n_shots'],
             min_fg_pixels = _config['min_fg_data'],
