@@ -63,6 +63,11 @@ def cfg():
     support_idx = [-1]
     val_wsize = 2
 
+    ### Visualization (validation only)
+    vis_episodes = 12  # number of validation episodes saved as figures (0 disables)
+    vis_out_dir = 'vis'  # subfolder of the sacred run directory for the figures
+    vis_sim_maps = False  # also render fg/bg similarity maps (show_viz path of the model)
+
     # Network (unchanged)
     modelname = 'dlfcn_res101'
     clsname = "grid_proto"

@@ -12,14 +12,14 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import torchvision
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from models.grid_proto_fewshot import FewShotSeg
 
 from dataloaders.dev_customized_med import med_fewshot_val
 from dataloaders.ManualAnnoDatasetv2 import ManualAnnoDataset
 from dataloaders.GenericSuperDatasetv2 import SuperpixelDataset
-from dataloaders.LandslideDataset import LandslideDataset
+from dataloaders.LandslideDataset import LandslideDataset, IMAGENET_MEAN, IMAGENET_STD
 from dataloaders.dataset_utils import DATASET_INFO, get_normalize_op
 from dataloaders.niftiio import convert_to_sitk
 
@@ -37,6 +37,46 @@ from torchvision.utils import make_grid
 
 # config pre-trained model caching path
 os.environ['TORCH_HOME'] = "./pretrained_model"
+
+# ------------------------------------------------------------------ visualization helpers
+def _denorm_image(tensor: torch.Tensor) -> np.ndarray:
+    """3 x H x W ImageNet-normalized tensor -> H x W x 3 uint8."""
+    mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(3, 1, 1)
+    std = np.array(IMAGENET_STD, dtype=np.float32).reshape(3, 1, 1)
+    arr = (tensor.cpu().numpy() * std + mean).clip(0.0, 1.0)
+    return (np.transpose(arr, (1, 2, 0)) * 255.0).astype(np.uint8)
+
+
+def _overlay_mask(image: np.ndarray, mask: np.ndarray, color, alpha: float = 0.5) -> np.ndarray:
+    """Tint the mask pixels of an H x W x 3 uint8 image."""
+    fg = np.asarray(mask) > 0
+    out = image.astype(np.float32) / 255.0
+    tint = np.zeros_like(out)
+    tint[fg] = np.asarray(color, dtype=np.float32) / 255.0
+    return (np.clip((1.0 - alpha) * out + alpha * tint, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _heatmap(tensor: torch.Tensor) -> np.ndarray:
+    """Similarity map with any leading dims -> H x W x 3 grayscale uint8 (min-max normalized)."""
+    arr = tensor.detach().cpu().numpy().squeeze().astype(np.float32)
+    if arr.ndim == 3:  # one map per prototype: keep the max similarity per pixel
+        arr = arr.max(axis=0)
+    arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-8)
+    return (np.repeat(arr[..., None], 3, axis=2) * 255.0).astype(np.uint8)
+
+
+def _titled_figure(panels, titles, pad: int = 4, title_bar: int = 24) -> Image.Image:
+    """Compose side-by-side panels with a white separator and a title above each column."""
+    h, w = panels[0].shape[:2]
+    n = len(panels)
+    fig = Image.new('RGB', ((n + 1) * pad + n * w, title_bar + h), 'white')
+    draw = ImageDraw.Draw(fig)
+    for i, p in enumerate(panels):
+        fig.paste(Image.fromarray(p), (pad + i * (w + pad), title_bar))
+    for i, t in enumerate(titles):
+        draw.text((pad + i * (w + pad) + 2, 5), t, fill='black')
+    return fig
+
 
 def landslide_validation(model, _config, _log, _run):
     """
@@ -59,8 +99,19 @@ def landslide_validation(model, _config, _log, _run):
     )
     loader = DataLoader(dataset, batch_size = 1, shuffle = False, num_workers = 1, pin_memory = False, drop_last = False)
 
+    # --- episode visualization setup ---
+    vis_n = int(_config.get('vis_episodes', 0) or 0)
+    vis_sim_maps = bool(_config.get('vis_sim_maps', False))
+    vis_dir = None
+    if vis_n > 0 and _run.observers:
+        vis_dir = os.path.join(_run.observers[0].dir, _config.get('vis_out_dir', 'vis'))
+        os.makedirs(vis_dir, exist_ok=True)
+        _log.info(f'###### Saving the first {vis_n} episode figures to {vis_dir} ######')
+
     tp = fp = fn = 0
     ep_dice = []
+    vis_saved = 0
+    ep_idx = 0
     with torch.no_grad():
         for sample_batched in tqdm.tqdm(loader):
             support_images = [[shot.cuda() for shot in way] for way in sample_batched['support_images']]
@@ -69,8 +120,9 @@ def landslide_validation(model, _config, _log, _run):
             query_images = [q.cuda() for q in sample_batched['query_images']]
             query_labels = torch.cat([q.long().cuda() for q in sample_batched['query_labels']], dim=0)
 
-            query_pred, _, _, _ = model(support_images, support_fg_mask, support_bg_mask, query_images,
-                                        isval = True, val_wsize = _config['val_wsize'])
+            show_viz = vis_sim_maps and (vis_dir is not None) and (vis_saved < vis_n)
+            query_pred, _, sim_maps, _ = model(support_images, support_fg_mask, support_bg_mask, query_images,
+                                               isval = True, val_wsize = _config['val_wsize'], show_viz = show_viz)
             pred = query_pred.argmax(dim=1) == 1
             gt = query_labels == 1
 
@@ -78,6 +130,30 @@ def landslide_validation(model, _config, _log, _run):
             tp += e_tp; fp += e_fp; fn += e_fn
             if e_tp + e_fn > 0:
                 ep_dice.append(2 * e_tp / (2 * e_tp + e_fp + e_fn))
+
+            if vis_dir is not None and vis_saved < vis_n:
+                dice_v = 2 * e_tp / (2 * e_tp + e_fp + e_fn) if e_tp + e_fp + e_fn > 0 else None
+                stem = f'ep{ep_idx:03d}_dice{dice_v:.3f}' if dice_v is not None else f'ep{ep_idx:03d}_noGTfg'
+                panels, titles = [], []
+                for s in range(len(support_images[0])):
+                    sup_img = _denorm_image(support_images[0][s][0])
+                    panels.append(_overlay_mask(sup_img, support_fg_mask[0][s][0].cpu().numpy(), (255, 0, 0)))
+                    titles.append(f'support {s}')
+                q_img = _denorm_image(query_images[0][0])
+                q_gt = query_labels[0].cpu().numpy() == 1
+                q_pred = pred[0].cpu().numpy()
+                panels += [q_img,
+                           _overlay_mask(q_img, q_gt, (0, 170, 0)),
+                           _overlay_mask(q_img, q_pred, (255, 0, 0))]
+                titles += ['query', 'ground truth', 'prediction']
+                if show_viz:
+                    panels += [_heatmap(sim_maps[0]), _heatmap(sim_maps[1])]  # [bg, fg] similarity
+                    titles += ['bg sim', 'fg sim']
+                fid = os.path.join(vis_dir, stem + '.png')
+                _titled_figure(panels, titles).save(fid)
+                _log.info(f'###### visualization saved: {fid} ######')
+                vis_saved += 1
+            ep_idx += 1
 
     eps = 1e-8
     results = {
